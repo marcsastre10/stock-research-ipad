@@ -4,38 +4,43 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # ----------------------------
 # Page config
 # ----------------------------
-st.set_page_config(
-    page_title="NASDAQ Stock Research Dashboard",
-    page_icon="📈",
-    layout="wide",
-)
+st.set_page_config(page_title="Stock Memo Dashboard", page_icon="🧾", layout="wide")
 
 # ----------------------------
-# Custom CSS for "dark blue + pro" look
+# Theme-ish CSS (minimal premium)
 # ----------------------------
 st.markdown(
     """
     <style>
-      .block-container {padding-top: 1.0rem; padding-bottom: 1.0rem;}
-      .stMetric {background: rgba(11,35,66,0.55); border: 1px solid rgba(255,255,255,0.06);
-                padding: 14px; border-radius: 14px;}
-      div[data-testid="stMetricLabel"] > div {font-size: 0.85rem; opacity: 0.85;}
-      div[data-testid="stMetricValue"] > div {font-size: 1.6rem;}
+      .block-container {padding-top: 1.0rem; padding-bottom: 1.2rem; max-width: 1200px;}
+      .muted {opacity: 0.75;}
+      .h1 {font-size: 1.65rem; font-weight: 800; margin: 0;}
+      .h2 {font-size: 1.1rem; font-weight: 700; margin: 0.1rem 0 0.4rem 0;}
+      .pill {display:inline-block; padding: 6px 10px; border-radius: 999px;
+             background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+             font-size: 0.82rem; opacity: 0.9;}
       .card {
-          background: rgba(11,35,66,0.55);
-          border: 1px solid rgba(255,255,255,0.06);
-          padding: 16px;
-          border-radius: 16px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.08);
+          padding: 14px 14px;
+          border-radius: 14px;
       }
-      .small-note {opacity: 0.75; font-size: 0.85rem;}
-      .title {font-size: 1.7rem; font-weight: 700; margin-bottom: 0.2rem;}
-      .subtitle {opacity: 0.85; margin-top: 0rem; margin-bottom: 0.8rem;}
-      hr {border: none; height: 1px; background: rgba(255,255,255,0.08); margin: 0.8rem 0;}
+      .kpi {
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.08);
+          padding: 12px 14px;
+          border-radius: 14px;
+      }
+      .kpi-label {font-size: 0.80rem; opacity: 0.75; margin-bottom: 2px;}
+      .kpi-value {font-size: 1.35rem; font-weight: 800; line-height: 1.1;}
+      .kpi-delta {font-size: 0.85rem; opacity: 0.85; margin-top: 4px;}
+      hr {border: none; height: 1px; background: rgba(255,255,255,0.08); margin: 0.9rem 0;}
+      .small {font-size: 0.85rem;}
+      .range-wrap {margin-top: 8px;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -44,54 +49,82 @@ st.markdown(
 # ----------------------------
 # Helpers
 # ----------------------------
-def fmt_money(x):
-    if x is None or (isinstance(x, float) and (math.isnan(x) or np.isinf(x))):
-        return "—"
-    absx = abs(x)
-    if absx >= 1e12:
-        return f"${x/1e12:.2f}T"
-    if absx >= 1e9:
-        return f"${x/1e9:.2f}B"
-    if absx >= 1e6:
-        return f"${x/1e6:.2f}M"
-    if absx >= 1e3:
-        return f"${x/1e3:.2f}K"
-    return f"${x:,.2f}"
-
-def fmt_num(x, suffix=""):
-    if x is None or (isinstance(x, float) and (math.isnan(x) or np.isinf(x))):
-        return "—"
-    return f"{x:,.2f}{suffix}"
-
 def safe_get(d, key, default=None):
     try:
         v = d.get(key, default)
-        if v is None:
-            return default
-        return v
+        return default if v is None else v
     except Exception:
         return default
 
-def compute_rsi(close: pd.Series, window: int = 14):
-    delta = close.diff()
-    gain = np.where(delta > 0, delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
-    gain = pd.Series(gain, index=close.index).rolling(window=window).mean()
-    loss = pd.Series(loss, index=close.index).rolling(window=window).mean()
-    rs = gain / (loss + 1e-12)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+def fmt_money(x):
+    if x is None:
+        return "—"
+    try:
+        x = float(x)
+        if math.isnan(x) or math.isinf(x):
+            return "—"
+    except Exception:
+        return "—"
+    ax = abs(x)
+    if ax >= 1e12: return f"${x/1e12:.2f}T"
+    if ax >= 1e9:  return f"${x/1e9:.2f}B"
+    if ax >= 1e6:  return f"${x/1e6:.2f}M"
+    return f"${x:,.0f}"
 
-def compute_macd(close: pd.Series, fast=12, slow=26, signal=9):
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
-    macd = ema_fast - ema_slow
-    sig = macd.ewm(span=signal, adjust=False).mean()
-    hist = macd - sig
-    return macd, sig, hist
+def fmt_num(x, digits=2):
+    if x is None:
+        return "—"
+    try:
+        x = float(x)
+        if math.isnan(x) or math.isinf(x):
+            return "—"
+        return f"{x:,.{digits}f}"
+    except Exception:
+        return "—"
+
+def fmt_pct(x, digits=2):
+    if x is None:
+        return "—"
+    try:
+        x = float(x)
+        if math.isnan(x) or math.isinf(x):
+            return "—"
+        return f"{x*100:.{digits}f}%"
+    except Exception:
+        return "—"
+
+def kpi(label, value, delta=None):
+    d = f'<div class="kpi"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div>'
+    if delta is not None:
+        d += f'<div class="kpi-delta">{delta}</div>'
+    d += "</div>"
+    st.markdown(d, unsafe_allow_html=True)
+
+def range_bar_52w(price, low, high):
+    # Returns a small HTML bar showing where price sits in 52W range
+    if any(v is None for v in [price, low, high]):
+        return "<div class='small muted'>52W range unavailable</div>"
+    try:
+        price, low, high = float(price), float(low), float(high)
+        if high <= low:
+            return "<div class='small muted'>52W range unavailable</div>"
+        pos = (price - low) / (high - low)
+        pos = max(0.0, min(1.0, pos))
+        pct = int(round(pos * 100))
+    except Exception:
+        return "<div class='small muted'>52W range unavailable</div>"
+
+    return f"""
+    <div class="range-wrap">
+      <div class="small muted">52W Range: {low:,.2f} → {high:,.2f}  •  Position: {pct}%</div>
+      <div style="height:10px; border-radius:999px; background:rgba(255,255,255,0.08); overflow:hidden; border:1px solid rgba(255,255,255,0.10);">
+        <div style="width:{pct}%; height:100%; background:rgba(46,91,255,0.9);"></div>
+      </div>
+    </div>
+    """
 
 @st.cache_data(ttl=60 * 20)
-def load_data(ticker: str, period: str):
+def load_ticker(ticker: str, period="2y"):
     t = yf.Ticker(ticker)
     hist = t.history(period=period, auto_adjust=False)
     info = {}
@@ -99,305 +132,273 @@ def load_data(ticker: str, period: str):
         info = t.get_info()
     except Exception:
         info = {}
+    return hist, info
 
-    # Financial statements (can be sparse for some tickers)
-    try:
-        fin_is = t.financials
-    except Exception:
-        fin_is = pd.DataFrame()
+def returns_since(hist: pd.DataFrame, days: int):
+    if hist is None or hist.empty or len(hist) < days + 1:
+        return None
+    p0 = float(hist["Close"].iloc[-days-1])
+    p1 = float(hist["Close"].iloc[-1])
+    if p0 == 0:
+        return None
+    return (p1 / p0) - 1.0
 
-    try:
-        fin_bs = t.balance_sheet
-    except Exception:
-        fin_bs = pd.DataFrame()
-
-    try:
-        fin_cf = t.cashflow
-    except Exception:
-        fin_cf = pd.DataFrame()
-
-    return hist, info, fin_is, fin_bs, fin_cf
-
-def make_candles(hist: pd.DataFrame, ma1=20, ma2=50, ma3=200):
+def make_price_chart(hist: pd.DataFrame, title="Price"):
     df = hist.copy()
-    df["MA20"] = df["Close"].rolling(ma1).mean()
-    df["MA50"] = df["Close"].rolling(ma2).mean()
-    df["MA200"] = df["Close"].rolling(ma3).mean()
+    df["MA50"] = df["Close"].rolling(50).mean()
+    df["MA200"] = df["Close"].rolling(200).mean()
 
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        name="Price"
-    ))
-    fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], mode="lines", name="MA20"))
+    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], mode="lines", name="Close"))
     fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], mode="lines", name="MA50"))
     fig.add_trace(go.Scatter(x=df.index, y=df["MA200"], mode="lines", name="MA200"))
-
     fig.update_layout(
-        height=520,
-        margin=dict(l=10, r=10, t=40, b=10),
         template="plotly_dark",
-        title="Price (Candles) + Moving Averages",
+        height=360,
+        margin=dict(l=10, r=10, t=40, b=10),
+        title=title,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
-    fig.update_xaxes(rangeslider_visible=False)
     return fig
 
-def make_volume(hist: pd.DataFrame):
+def make_relative_chart(main_hist: pd.DataFrame, spy_hist: pd.DataFrame, main_label: str):
+    # Normalize both to 100 at start
+    a = main_hist["Close"].dropna()
+    b = spy_hist["Close"].dropna()
+    if a.empty or b.empty:
+        return None
+    idx = a.index.intersection(b.index)
+    a = a.loc[idx]
+    b = b.loc[idx]
+    if len(idx) < 10:
+        return None
+    a_norm = (a / a.iloc[0]) * 100
+    b_norm = (b / b.iloc[0]) * 100
+
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=hist.index, y=hist["Volume"], name="Volume"))
+    fig.add_trace(go.Scatter(x=idx, y=a_norm, mode="lines", name=main_label))
+    fig.add_trace(go.Scatter(x=idx, y=b_norm, mode="lines", name="QQQ"))
     fig.update_layout(
-        height=260,
-        margin=dict(l=10, r=10, t=40, b=10),
         template="plotly_dark",
-        title="Volume",
-    )
-    return fig
-
-def make_returns_drawdown(hist: pd.DataFrame):
-    df = hist.copy()
-    df["ret"] = df["Close"].pct_change()
-    df["equity"] = (1 + df["ret"].fillna(0)).cumprod()
-    df["peak"] = df["equity"].cummax()
-    df["drawdown"] = df["equity"] / df["peak"] - 1.0
-
-    # returns histogram
-    histo = go.Figure()
-    r = df["ret"].dropna()
-    histo.add_trace(go.Histogram(x=r, nbinsx=60, name="Daily returns"))
-    histo.update_layout(
-        height=260,
+        height=320,
         margin=dict(l=10, r=10, t=40, b=10),
-        template="plotly_dark",
-        title="Daily Returns Distribution",
-    )
-
-    # drawdown chart
-    dd = go.Figure()
-    dd.add_trace(go.Scatter(x=df.index, y=df["drawdown"], mode="lines", name="Drawdown"))
-    dd.update_layout(
-        height=260,
-        margin=dict(l=10, r=10, t=40, b=10),
-        template="plotly_dark",
-        title="Drawdown",
-        yaxis_tickformat=".0%",
-    )
-    return histo, dd
-
-def make_rsi_macd(hist: pd.DataFrame):
-    df = hist.copy()
-    df["RSI14"] = compute_rsi(df["Close"], 14)
-    macd, sig, h = compute_macd(df["Close"])
-    df["MACD"], df["SIGNAL"], df["HIST"] = macd, sig, h
-
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.15,
-                        row_heights=[0.5, 0.5],
-                        subplot_titles=("RSI (14)", "MACD"))
-
-    fig.add_trace(go.Scatter(x=df.index, y=df["RSI14"], mode="lines", name="RSI"), row=1, col=1)
-    fig.add_hline(y=70, line_dash="dot", row=1, col=1)
-    fig.add_hline(y=30, line_dash="dot", row=1, col=1)
-
-    fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], mode="lines", name="MACD"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["SIGNAL"], mode="lines", name="Signal"), row=2, col=1)
-    fig.add_trace(go.Bar(x=df.index, y=df["HIST"], name="Hist"), row=2, col=1)
-
-    fig.update_layout(
-        height=520,
-        margin=dict(l=10, r=10, t=40, b=10),
-        template="plotly_dark",
-        title="Technical Indicators",
+        title="Relative Performance (Normalized to 100)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
     return fig
 
-def clean_fin_df(df: pd.DataFrame, n=8):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    out = df.copy()
-    out.columns = [c.date().isoformat() if hasattr(c, "date") else str(c) for c in out.columns]
-    out = out.iloc[:n, :]
-    out.index = [str(i) for i in out.index]
-    return out
-
 # ----------------------------
-# Sidebar controls
+# Sidebar (minimal)
 # ----------------------------
-st.sidebar.markdown("### 🔎 Stock Search")
-ticker = st.sidebar.text_input("NASDAQ ticker (e.g., AAPL, NVDA, MSFT)", value="AAPL").strip().upper()
+st.sidebar.markdown("### 🧾 Stock Memo")
+ticker = st.sidebar.text_input("Ticker (NASDAQ)", value="AAPL").strip().upper()
+period = st.sidebar.selectbox("History", ["6mo", "1y", "2y", "5y"], index=2)
 
-period = st.sidebar.selectbox(
-    "Price history",
-    ["6mo", "1y", "2y", "5y", "10y"],
-    index=2
+st.sidebar.markdown("---")
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = ["AAPL", "MSFT", "NVDA"]
+
+add_col1, add_col2 = st.sidebar.columns([2, 1])
+with add_col1:
+    add_t = st.text_input("Add to watchlist", value="", placeholder="e.g., AMZN").strip().upper()
+with add_col2:
+    if st.button("Add"):
+        if add_t and add_t not in st.session_state.watchlist:
+            st.session_state.watchlist.append(add_t)
+
+st.sidebar.markdown("**Watchlist**")
+to_remove = None
+for w in st.session_state.watchlist:
+    c1, c2 = st.sidebar.columns([4, 1])
+    c1.write(w)
+    if c2.button("✕", key=f"rm_{w}"):
+        to_remove = w
+if to_remove:
+    st.session_state.watchlist = [x for x in st.session_state.watchlist if x != to_remove]
+    st.rerun()
+
+st.sidebar.markdown("---")
+compare = st.sidebar.multiselect(
+    "Compare (2–5 tickers)",
+    options=st.session_state.watchlist,
+    default=[t for t in st.session_state.watchlist if t in ["AAPL", "MSFT"]][:2],
 )
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### ⚙️ Display options")
-ma1 = st.sidebar.slider("MA1", 5, 60, 20)
-ma2 = st.sidebar.slider("MA2", 20, 120, 50)
-ma3 = st.sidebar.slider("MA3", 50, 300, 200)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown('<div class="small-note">Data source: Yahoo Finance (via yfinance). Some fields can be missing for certain tickers.</div>', unsafe_allow_html=True)
-
 # ----------------------------
-# Load
+# Load main ticker
 # ----------------------------
 if not ticker:
     st.stop()
 
-try:
-    hist, info, fin_is, fin_bs, fin_cf = load_data(ticker, period)
-except Exception as e:
-    st.error(f"Could not load data for {ticker}. Error: {e}")
+main_hist, main_info = load_ticker(ticker, period=period)
+if main_hist is None or main_hist.empty:
+    st.error("No price data. Double-check the ticker.")
     st.stop()
 
-if hist is None or hist.empty:
-    st.error(f"No price history returned for {ticker}. Double-check the ticker.")
-    st.stop()
+# benchmark (NASDAQ feel)
+qqq_hist, _ = load_ticker("QQQ", period=period)
 
 # ----------------------------
 # Header
 # ----------------------------
-name = safe_get(info, "longName", ticker)
-exchange = safe_get(info, "exchange", "—")
-sector = safe_get(info, "sector", "—")
-industry = safe_get(info, "industry", "—")
+name = safe_get(main_info, "longName", ticker)
+sector = safe_get(main_info, "sector", "—")
+industry = safe_get(main_info, "industry", "—")
+exchange = safe_get(main_info, "exchange", "—")
 
-st.markdown(f'<div class="title">{name} <span style="opacity:.7; font-weight:600;">({ticker})</span></div>', unsafe_allow_html=True)
-st.markdown(f'<div class="subtitle">{exchange} • {sector} • {industry}</div>', unsafe_allow_html=True)
+last = float(main_hist["Close"].iloc[-1])
+prev = float(main_hist["Close"].iloc[-2]) if len(main_hist) >= 2 else None
+dchg = (last - prev) if prev else None
+dchg_pct = (dchg / prev) if prev else None
 
-# ----------------------------
-# KPIs
-# ----------------------------
-last_close = float(hist["Close"].iloc[-1])
-prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else np.nan
-chg = last_close - prev_close if not np.isnan(prev_close) else np.nan
-chg_pct = (chg / prev_close) if (not np.isnan(prev_close) and prev_close != 0) else np.nan
-
-day_low = float(hist["Low"].iloc[-1])
-day_high = float(hist["High"].iloc[-1])
-vol = float(hist["Volume"].iloc[-1])
-
-wk52_low = safe_get(info, "fiftyTwoWeekLow")
-wk52_high = safe_get(info, "fiftyTwoWeekHigh")
-mcap = safe_get(info, "marketCap")
-pe = safe_get(info, "trailingPE")
-fpe = safe_get(info, "forwardPE")
-eps = safe_get(info, "trailingEps")
-beta = safe_get(info, "beta")
-div_yield = safe_get(info, "dividendYield")
-
-kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
-
-kpi1.metric("Price", f"${last_close:,.2f}", f"{chg_pct*100:,.2f}%" if not np.isnan(chg_pct) else None)
-kpi2.metric("Day Range", f"${day_low:,.2f} – ${day_high:,.2f}")
-kpi3.metric("Volume", f"{vol:,.0f}")
-kpi4.metric("Market Cap", fmt_money(mcap))
-kpi5.metric("P/E (TTM) / Fwd", f"{fmt_num(pe)} / {fmt_num(fpe)}")
-kpi6.metric("EPS / Beta", f"{fmt_num(eps)} / {fmt_num(beta)}")
-
-kpi7, kpi8, kpi9 = st.columns(3)
-kpi7.metric("52w Range", f"${fmt_num(wk52_low)} – ${fmt_num(wk52_high)}")
-kpi8.metric("Dividend Yield", f"{(div_yield*100):.2f}%" if isinstance(div_yield, (int, float)) else "—")
-kpi9.metric("Exchange", str(exchange))
-
-st.markdown("<hr/>", unsafe_allow_html=True)
+st.markdown(f"<div class='h1'>{name} <span class='muted'>({ticker})</span></div>", unsafe_allow_html=True)
+st.markdown(
+    f"<span class='pill'>{exchange}</span> "
+    f"<span class='pill'>{sector}</span> "
+    f"<span class='pill'>{industry}</span>",
+    unsafe_allow_html=True
+)
 
 # ----------------------------
-# Main charts
+# KPI row (clean)
 # ----------------------------
-left, right = st.columns([1.6, 1.0])
-
-with left:
-    st.plotly_chart(make_candles(hist, ma1=ma1, ma2=ma2, ma3=ma3), use_container_width=True)
-    st.plotly_chart(make_volume(hist), use_container_width=True)
-
-with right:
-    histo, dd = make_returns_drawdown(hist)
-    st.plotly_chart(histo, use_container_width=True)
-    st.plotly_chart(dd, use_container_width=True)
-
-st.plotly_chart(make_rsi_macd(hist), use_container_width=True)
-
-st.markdown("<hr/>", unsafe_allow_html=True)
-
-# ----------------------------
-# Fundamentals section
-# ----------------------------
-st.markdown("## Fundamentals")
-
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
 with c1:
-    st.markdown('<div class="card"><b>Business Summary</b><br/>', unsafe_allow_html=True)
-    summary = safe_get(info, "longBusinessSummary", "—")
-    st.write(summary if summary else "—")
-    st.markdown("</div>", unsafe_allow_html=True)
+    delta_txt = f"{'+' if dchg_pct and dchg_pct>=0 else ''}{fmt_pct(dchg_pct)} today" if dchg_pct is not None else None
+    kpi("Price", f"${last:,.2f}", delta_txt)
 
 with c2:
-    st.markdown('<div class="card"><b>Key Stats</b><br/>', unsafe_allow_html=True)
-    stats = {
-        "Employees": safe_get(info, "fullTimeEmployees"),
-        "Country": safe_get(info, "country"),
-        "Currency": safe_get(info, "currency"),
-        "Website": safe_get(info, "website"),
-        "Gross Margins": safe_get(info, "grossMargins"),
-        "Operating Margins": safe_get(info, "operatingMargins"),
-        "Profit Margins": safe_get(info, "profitMargins"),
-        "ROE": safe_get(info, "returnOnEquity"),
-        "ROA": safe_get(info, "returnOnAssets"),
-    }
-    srows = []
-    for k, v in stats.items():
-        if isinstance(v, (int, float)) and ("Margins" in k or k in ["ROE", "ROA"]):
-            srows.append((k, f"{v*100:.2f}%"))
-        else:
-            srows.append((k, "—" if v is None else str(v)))
-    st.dataframe(pd.DataFrame(srows, columns=["Metric", "Value"]), use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    r5 = returns_since(main_hist, 5)
+    r21 = returns_since(main_hist, 21)
+    kpi("Momentum", f"{fmt_pct(r5)} / {fmt_pct(r21)}", "1W / 1M")
 
 with c3:
-    st.markdown('<div class="card"><b>Valuation Multiples (best effort)</b><br/>', unsafe_allow_html=True)
-    multiples = {
-        "P/S": safe_get(info, "priceToSalesTrailing12Months"),
-        "P/B": safe_get(info, "priceToBook"),
-        "EV/Revenue": safe_get(info, "enterpriseToRevenue"),
-        "EV/EBITDA": safe_get(info, "enterpriseToEbitda"),
-        "PEG": safe_get(info, "pegRatio"),
-    }
-    mrows = []
-    for k, v in multiples.items():
-        mrows.append((k, fmt_num(v)))
-    st.dataframe(pd.DataFrame(mrows, columns=["Multiple", "Value"]), use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    mcap = safe_get(main_info, "marketCap")
+    ev = safe_get(main_info, "enterpriseValue")
+    kpi("Size", f"{fmt_money(mcap)}", f"EV {fmt_money(ev)}")
 
-st.markdown("### Financial Statements (latest available)")
-is_df = clean_fin_df(fin_is, n=12)
-bs_df = clean_fin_df(fin_bs, n=12)
-cf_df = clean_fin_df(fin_cf, n=12)
+with c4:
+    pe = safe_get(main_info, "trailingPE")
+    fpe = safe_get(main_info, "forwardPE")
+    ps = safe_get(main_info, "priceToSalesTrailing12Months")
+    kpi("Valuation", f"P/E {fmt_num(pe)}", f"Fwd {fmt_num(fpe)} • P/S {fmt_num(ps)}")
 
-tab1, tab2, tab3 = st.tabs(["Income Statement", "Balance Sheet", "Cash Flow"])
-
-with tab1:
-    if is_df.empty:
-        st.info("No income statement data returned for this ticker.")
-    else:
-        st.dataframe(is_df, use_container_width=True)
-
-with tab2:
-    if bs_df.empty:
-        st.info("No balance sheet data returned for this ticker.")
-    else:
-        st.dataframe(bs_df, use_container_width=True)
-
-with tab3:
-    if cf_df.empty:
-        st.info("No cash flow data returned for this ticker.")
-    else:
-        st.dataframe(cf_df, use_container_width=True)
+# 52W bar
+wk52_low = safe_get(main_info, "fiftyTwoWeekLow")
+wk52_high = safe_get(main_info, "fiftyTwoWeekHigh")
+st.markdown(range_bar_52w(last, wk52_low, wk52_high), unsafe_allow_html=True)
 
 st.markdown("<hr/>", unsafe_allow_html=True)
-st.caption("Tip: add your own watchlist, alerts, and valuation models next (DCF/comp table).")
+
+# ----------------------------
+# Tabs (minimal memo)
+# ----------------------------
+tab_overview, tab_compare, tab_snapshot = st.tabs(["Overview", "Compare", "Company Snapshot"])
+
+with tab_overview:
+    left, right = st.columns([1.35, 0.65])
+
+    with left:
+        st.plotly_chart(make_price_chart(main_hist, title="Price (MA50 / MA200)"), use_container_width=True)
+        rel = make_relative_chart(main_hist, qqq_hist, ticker)
+        if rel:
+            st.plotly_chart(rel, use_container_width=True)
+
+    with right:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        st.markdown("<div class='h2'>Quick Take</div>", unsafe_allow_html=True)
+
+        gm = safe_get(main_info, "grossMargins")
+        om = safe_get(main_info, "operatingMargins")
+        pm = safe_get(main_info, "profitMargins")
+        roe = safe_get(main_info, "returnOnEquity")
+        beta = safe_get(main_info, "beta")
+        divy = safe_get(main_info, "dividendYield")
+
+        lines = [
+            ("Gross / Op / Profit margin", f"{fmt_pct(gm)} / {fmt_pct(om)} / {fmt_pct(pm)}"),
+            ("ROE / Beta", f"{fmt_pct(roe)} / {fmt_num(beta)}"),
+            ("Dividend yield", fmt_pct(divy)),
+        ]
+        df = pd.DataFrame(lines, columns=["Metric", "Value"])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown("<hr/>", unsafe_allow_html=True)
+        st.markdown("<div class='h2'>Business Summary</div>", unsafe_allow_html=True)
+        summary = safe_get(main_info, "longBusinessSummary", "—")
+        st.markdown(f"<div class='small muted'>{summary}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+with tab_compare:
+    st.markdown("<div class='h2'>Side-by-side (clean)</div>", unsafe_allow_html=True)
+
+    if len(compare) < 2:
+        st.info("Pick at least 2 tickers in the sidebar under Compare.")
+    else:
+        rows = []
+        hists = {}
+        for t in compare[:5]:
+            h, inf = load_ticker(t, period=period)
+            if h is None or h.empty:
+                continue
+            hists[t] = h
+            lastp = float(h["Close"].iloc[-1])
+            prevp = float(h["Close"].iloc[-2]) if len(h) >= 2 else np.nan
+            day = (lastp / prevp - 1) if prevp and not np.isnan(prevp) else np.nan
+            rows.append({
+                "Ticker": t,
+                "Price": f"${lastp:,.2f}",
+                "1D": fmt_pct(day),
+                "1W": fmt_pct(returns_since(h, 5)),
+                "1M": fmt_pct(returns_since(h, 21)),
+                "Mkt Cap": fmt_money(safe_get(inf, "marketCap")),
+                "P/E": fmt_num(safe_get(inf, "trailingPE")),
+                "Fwd P/E": fmt_num(safe_get(inf, "forwardPE")),
+                "P/S": fmt_num(safe_get(inf, "priceToSalesTrailing12Months")),
+            })
+
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # Normalized performance chart
+        fig = go.Figure()
+        for t, h in hists.items():
+            s = h["Close"].dropna()
+            if len(s) < 10:
+                continue
+            s = (s / s.iloc[0]) * 100
+            fig.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines", name=t))
+        fig.update_layout(
+            template="plotly_dark",
+            height=360,
+            margin=dict(l=10, r=10, t=40, b=10),
+            title="Performance (Normalized to 100)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+with tab_snapshot:
+    st.markdown("<div class='h2'>Clean company facts</div>", unsafe_allow_html=True)
+
+    c1, c2 = st.columns([0.6, 0.4])
+    with c1:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        facts = {
+            "Website": safe_get(main_info, "website"),
+            "Employees": safe_get(main_info, "fullTimeEmployees"),
+            "Country": safe_get(main_info, "country"),
+            "Currency": safe_get(main_info, "currency"),
+            "52W Low / High": f"{fmt_num(wk52_low)} / {fmt_num(wk52_high)}",
+        }
+        fdf = pd.DataFrame([(k, "—" if v is None else str(v)) for k, v in facts.items()], columns=["Field", "Value"])
+        st.dataframe(fdf, use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        st.markdown("<div class='h2'>Notes (manual)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small muted'>Add your own thesis notes here. (We can make this persist later.)</div>", unsafe_allow_html=True)
+        st.text_area("Thesis / risks / catalysts", value="", height=220, label_visibility="collapsed")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+st.caption("Data via Yahoo Finance (yfinance). Some fields may be missing for certain tickers.")
